@@ -51,7 +51,7 @@ export class MemliteMcpClient {
   spawn(): void {
     if (this.process) return;
 
-    this.process = spawn(this.binaryPath, ["serve"], {
+    this.process = spawn(this.binaryPath, ["serve", "--verbose-llama=false"], {
       stdio: ["pipe", "pipe", "inherit"], // stderr → process.stderr
       env: { ...process.env }, // passthrough env
     });

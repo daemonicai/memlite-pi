@@ -27,11 +27,19 @@ The extension SHALL intercept `tool_call` events where `toolName === "memory_del
 - **THEN** the tool is blocked with reason "User cancelled"
 
 ### Requirement: Guardrails are bypassable for testing
-The extension SHALL support a `--memlite-unsafe` CLI flag that disables all confirmation dialogs. When set, `memory_clear` and `memory_delete` execute without user confirmation.
+The extension SHALL support a `--memlite-unsafe` CLI flag and `MEMLITE_UNSAFE` environment variable that disable all confirmation dialogs. The CLI flag takes precedence when both are set. When enabled, `memory_clear` and `memory_delete` execute without user confirmation. Truthy env values include `1`, `true`, `yes`, `on` (case-insensitive).
 
-#### Scenario: Unsafe mode
+#### Scenario: Unsafe mode via CLI flag
 - **WHEN** Pi is started with `--memlite-unsafe`
 - **THEN** `memory_clear` deletes all memories without prompting
+
+#### Scenario: Unsafe mode via env var
+- **WHEN** `MEMLITE_UNSAFE=1` is set and no `--memlite-unsafe` flag is given
+- **THEN** `memory_clear` and `memory_delete` execute without prompting
+
+#### Scenario: Env var overridden by explicit false flag
+- **WHEN** `MEMLITE_UNSAFE=1` is set and Pi is started with `--memlite-unsafe=false`
+- **THEN** guardrails are active (explicit flag wins)
 
 ### Requirement: Guardrails only apply to LLM-initiated tool calls
 The extension SHALL NOT block tool calls that originate from the extension itself (e.g. auto-save feature calling `memory_add`). The `tool_call` event does not distinguish caller, but the guardrails only check the tool name (`memory_clear` / `memory_delete`). Auto-save uses `memory_add` which is unaffected.

@@ -21,6 +21,46 @@ import {
   DESTRUCTIVE_TOOLS,
 } from "./config.js";
 
+// ---- Env-var flag helpers ----
+
+/** Shell-friendly truthy check for boolean env vars. */
+function isTruthy(value: string | undefined): boolean {
+  if (!value) return false;
+  const v = value.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
+/**
+ * Resolve a flag value with env var fallback. CLI flag takes precedence.
+ * - If the flag appears in process.argv, return pi.getFlag(flagName) directly.
+ * - Otherwise, check process.env[envName] with isTruthy coercion for booleans.
+ */
+function envFlag(
+  pi: ExtensionAPI,
+  flagName: string,
+): string | boolean | undefined {
+  const flagInArgv = process.argv.some(
+    (a) =>
+      a === `--${flagName}` ||
+      a.startsWith(`--${flagName}=`),
+  );
+  if (flagInArgv) return pi.getFlag(flagName);
+
+  const envVal = process.env[envNameFromFlag(flagName)];
+  if (envVal === undefined) return pi.getFlag(flagName);
+
+  // String flag → return env value as-is
+  if (flagName === "memlite-path") return envVal;
+
+  // Boolean flag → truthy coercion
+  return isTruthy(envVal);
+}
+
+/** Derive env var name from flag name (e.g., "memlite-path" → "MEMLITE_PATH"). */
+function envNameFromFlag(flagName: string): string {
+  return flagName.toUpperCase().replace(/-/g, "_");
+}
+
 export default async function (pi: ExtensionAPI) {
   // ---- CLI flags ----
   pi.registerFlag("memlite-path", {
@@ -71,7 +111,7 @@ export default async function (pi: ExtensionAPI) {
 
     // Determine binary path
     const memlitePath: string =
-      (pi.getFlag("memlite-path") as string | undefined) ?? MEMLITE_BINARY;
+      (envFlag(pi, "memlite-path") as string | undefined) ?? MEMLITE_BINARY;
 
     // Discover binary
     const { code } = await pi.exec("which", [memlitePath]);
@@ -124,7 +164,7 @@ export default async function (pi: ExtensionAPI) {
     }
 
     // Skip confirmation in unsafe mode
-    if (pi.getFlag("memlite-unsafe")) return;
+    if (envFlag(pi, "memlite-unsafe")) return;
 
     // Skip confirmation in non-interactive mode
     if (!ctx.hasUI) return;
@@ -143,12 +183,12 @@ export default async function (pi: ExtensionAPI) {
 
   // ---- Auto-save (stretch, behind --memlite-auto-save flag) ----
   pi.on("turn_end", async () => {
-    if (!pi.getFlag("memlite-auto-save")) return;
+    if (!envFlag(pi, "memlite-auto-save")) return;
     autoSaveState.turnsSinceSave++;
   });
 
   pi.on("session_before_compact", async (_event, ctx) => {
-    if (!pi.getFlag("memlite-auto-save")) return;
+    if (!envFlag(pi, "memlite-auto-save")) return;
     if (!client || client.isClosed) return;
 
     // Rate-limit: only save if >= 5 turns since last save
@@ -200,7 +240,7 @@ export default async function (pi: ExtensionAPI) {
 
   // ---- Ambient context (stretch, behind --memlite-context flag) ----
   pi.on("before_agent_start", async (event) => {
-    if (!pi.getFlag("memlite-context")) return;
+    if (!envFlag(pi, "memlite-context")) return;
     if (!client || client.isClosed) return;
 
     try {
@@ -243,9 +283,9 @@ export default async function (pi: ExtensionAPI) {
 // ---- Session summary generator ----
 // Walks the session branch, extracts user+assistant message pairs, formats as Markdown.
 async function generateSessionSummary(
-  ctx: { sessionManager: { getBranch(): Array<Record<string, unknown>> } }
+  ctx: { sessionManager: { getBranch(): unknown } }
 ): Promise<string | null> {
-  const entries = ctx.sessionManager.getBranch();
+  const entries = ctx.sessionManager.getBranch() as Array<Record<string, unknown>>;
   const pairs: Array<{ user: string; assistant: string }> = [];
 
   let currentUser: string | null = null;
