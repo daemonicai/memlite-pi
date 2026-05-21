@@ -5,8 +5,7 @@ A [Pi](https://github.com/earendil-works/pi-coding-agent) extension that bridges
 ## Install
 
 ```sh
-# 1. Install memlite (see https://github.com/daemonicai/memlite)
-brew install memlite  # or download from releases
+# 1. Install memlite (follow instructions at https://github.com/daemonicai/memlite#install)
 
 # 2. Initialize memlite (downloads embedding model, creates DB)
 memlite init
