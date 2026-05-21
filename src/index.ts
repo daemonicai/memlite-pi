@@ -82,6 +82,11 @@ export default async function (pi: ExtensionAPI) {
     type: "boolean",
     default: false,
   });
+  pi.registerFlag("no-core-memory", {
+    description: "Disable core memory injection",
+    type: "boolean",
+    default: false,
+  });
 
   // ---- Runtime state ----
   let client: MemliteMcpClient | null = null;
@@ -92,6 +97,14 @@ export default async function (pi: ExtensionAPI) {
     lastSaveEntryId?: string;
   }
   const autoSaveState: AutoSaveState = { turnsSinceSave: 0 };
+
+  // Core memories cache (loaded once per session_start, injected every turn)
+  interface CoreMemory {
+    slug?: string;
+    content: string;
+  }
+  let coreMemoriesCache: CoreMemory[] = [];
+  let projectName: string | null = null;
 
   // ---- session_start: spawn memlite, handshake, register tools ----
   pi.on("session_start", async (_event, ctx) => {
@@ -145,6 +158,60 @@ export default async function (pi: ExtensionAPI) {
     const tools = createMemliteTools(client);
     for (const tool of tools) {
       pi.registerTool(tool);
+    }
+
+    // Detect project name from git remote (for auto_context project filter)
+    if (client && !client.isClosed) {
+      try {
+        const { stdout } = await pi.exec("git", [
+          "-C",
+          ctx.cwd,
+          "remote",
+          "get-url",
+          "origin",
+        ]);
+        const url = stdout.trim();
+        const match = url.match(/[:\/]([\w.-]+\/[\w.-]+?)(?:\.git)?$/);
+        if (match?.[1]) {
+          projectName = match[1];
+        }
+      } catch {
+        // Not a git repo — auto_context won't filter by project
+      }
+    }
+
+    // Load core memories (if not opted out)
+    if (!envFlag(pi, "no-core-memory") && client) {
+      try {
+        const result = (await client.callTool("memory_list", {
+          where: { core_memory: "true" },
+          order_by: "last_accessed",
+          limit: 50,
+        })) as { memories?: CoreMemory[] };
+
+        coreMemoriesCache = result.memories ?? [];
+
+        // Character cap with truncation warning
+        let totalChars = 0;
+        const capped: CoreMemory[] = [];
+        let excluded = 0;
+        for (const m of coreMemoriesCache) {
+          const charLen = m.content.length + (m.slug ? m.slug.length + 4 : 10); // bullet overhead
+          if (totalChars + charLen > 5000) {
+            excluded++;
+          } else {
+            capped.push(m);
+            totalChars += charLen;
+          }
+        }
+        if (excluded > 0) {
+          coreMemoriesCache = capped;
+          const msg = "Core memories truncated: " + capped.length + " included, " + excluded + " excluded (exceeds 5000 character limit)";
+          ctx.ui.notify(msg, "warning");
+        }
+      } catch {
+        coreMemoriesCache = [];
+      }
     }
   });
 
@@ -240,42 +307,57 @@ export default async function (pi: ExtensionAPI) {
 
   // ---- Ambient context (stretch, behind --memlite-context flag) ----
   pi.on("before_agent_start", async (event) => {
-    if (!envFlag(pi, "memlite-context")) return;
+    const coreEnabled = !envFlag(pi, "no-core-memory");
+    const ctxEnabled = !!envFlag(pi, "memlite-context");
+    if (!coreEnabled && !ctxEnabled) return;
     if (!client || client.isClosed) return;
 
-    try {
-      // Find auto_context-tagged memories
-      const result = (await client.callTool("memory_list", {
-        where: [{ key: "auto_context", values: ["true"] }],
-        order_by: "last_accessed",
-        limit: 10,
-      })) as { memories?: Array<{ slug?: string; content: string }> };
+    let promptBlocks: string[] = [];
 
-      const memories = result.memories;
-      if (!memories || memories.length === 0) return;
-
-      // Cap at 5, total content <= 2000 chars
+    // Core memories (injected first, always-on unless opted out)
+    if (coreEnabled && coreMemoriesCache.length > 0) {
       const bullets: string[] = [];
-      let totalChars = 0;
-      const maxMemories = Math.min(memories.length, 5);
-
-      for (let i = 0; i < maxMemories; i++) {
-        const m = memories[i]!;
+      for (const m of coreMemoriesCache) {
         const preview = m.content.slice(0, 200).replace(/\n/g, " ");
-        const bullet = `- ${m.slug ?? "untitled"}: "${preview}${m.content.length > 200 ? "…" : ""}"`;
-        if (totalChars + bullet.length > 2000) break;
-        bullets.push(bullet);
-        totalChars += bullet.length;
+        bullets.push(`- ${m.slug ?? "untitled"}: "${preview}${m.content.length > 200 ? "…" : ""}"`);
       }
+      promptBlocks.push(`## Core Memories\n${bullets.join("\n")}`);
+    }
 
-      if (bullets.length === 0) return;
+    // Auto_context memories (opt-in)
+    if (ctxEnabled) {
+      try {
+        const result = (await client.callTool("memory_list", {
+          where: projectName ? { auto_context: "true", project: projectName } : { auto_context: "true" },
+          order_by: "last_accessed",
+          limit: 10,
+        })) as { memories?: Array<{ slug?: string; content: string }> };
 
-      const contextBlock = `\n\n## Context from your memory\n${bullets.join("\n")}`;
+        const memories = result.memories;
+        if (memories && memories.length > 0) {
+          const bullets: string[] = [];
+          let totalChars = 0;
+          for (let i = 0; i < Math.min(memories.length, 5); i++) {
+            const m = memories[i]!;
+            const preview = m.content.slice(0, 200).replace(/\n/g, " ");
+            const bullet = `- ${m.slug ?? "untitled"}: "${preview}${m.content.length > 200 ? "…" : ""}"`;
+            if (totalChars + bullet.length > 2000) break;
+            bullets.push(bullet);
+            totalChars += bullet.length;
+          }
+          if (bullets.length > 0) {
+            promptBlocks.push(`## Context from your memory\n${bullets.join("\n")}`);
+          }
+        }
+      } catch {
+        // Silently skip on failure
+      }
+    }
+
+    if (promptBlocks.length > 0) {
       return {
-        systemPrompt: event.systemPrompt + contextBlock,
+        systemPrompt: event.systemPrompt + "\n\n" + promptBlocks.join("\n\n"),
       };
-    } catch {
-      // Silently skip on failure
     }
   });
 }

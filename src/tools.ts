@@ -18,13 +18,8 @@ const Tags = Type.Record(Type.String(), Type.Union([Type.String(), Type.Array(Ty
 /** Format enum */
 const Format = Type.Union([Type.Literal("text"), Type.Literal("markdown")]);
 
-/** Tag filter for search/list where clauses */
-const TagFilter = Type.Array(
-  Type.Object({
-    key: Type.String(),
-    values: Type.Array(Type.String()),
-  })
-);
+/** Tag filter for search/list where clauses (plain object, matches memlite MCP parseTagFilters) */
+const TagFilter = Type.Record(Type.String(), Type.Union([Type.String(), Type.Array(Type.String())]));
 
 /** Order by enum */
 const OrderBy = Type.Union([
@@ -34,6 +29,10 @@ const OrderBy = Type.Union([
 ]);
 
 // ---- Tool parameter schemas ----
+
+const memoryAddCoreParams = Type.Object({
+  text: Type.String(),
+});
 
 const memoryAddParams = Type.Object({
   content: Type.String(),
@@ -119,6 +118,8 @@ const listTagSiblingsParams = Type.Object({
 // ---- Tool descriptions ----
 
 const DESCRIPTIONS: Record<string, string> = {
+  memory_add_core:
+    "Store a short, standalone core memory fact about the user. Automatically tagged core_memory: true, format forced to text, slug auto-generated. Rejects empty text.",
   memory_add:
     "Add a new memory with optional slug, format (text or markdown), and tags. Returns the created memory's id, slug, format, chunk count, and tag count.",
   memory_load:
@@ -246,6 +247,44 @@ export function createMemliteTools(
               await client.callTool("memory_load", args as Record<string, unknown>),
               null,
               2
+            ),
+          },
+        ],
+        details: {},
+      };
+    },
+  });
+
+  // memory_add_core — dedicated tool for core memory creation
+  tools.push({
+    name: "memory_add_core",
+    label: "memory_add_core",
+    description: DESCRIPTIONS.memory_add_core!,
+    promptSnippet: "Store a core memory fact about the user",
+    promptGuidelines: [
+      "Use memory_add_core when you learn a fact about the user (name, identity, preferences, habits, or personal information). Each memory should be one short, standalone fact.",
+    ],
+    parameters: memoryAddCoreParams,
+    async execute(_toolCallId, args, _signal, _onUpdate, _ctx) {
+      if (!client) throw new Error(DEGRADED_TOOL_ERROR);
+      const text = ((args as { text: string }).text ?? "").trim();
+      if (!text) {
+        throw new Error("memory_add_core: text must be non-empty");
+      }
+      const slug = `core-${Date.now()}`;
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              await client.callTool("memory_add", {
+                content: text,
+                format: "text",
+                slug,
+                tags: { core_memory: "true" },
+              }),
+              null,
+              2,
             ),
           },
         ],
