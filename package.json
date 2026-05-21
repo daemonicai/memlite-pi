@@ -1,0 +1,18 @@
+{
+  "name": "memlite-pi",
+  "version": "0.1.0",
+  "description": "Pi extension for memlite — persistent memory for AI agents via MCP stdio",
+  "license": "MPL-2.0",
+  "type": "module",
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0"
+  }
+}
